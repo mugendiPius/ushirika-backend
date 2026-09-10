@@ -30,7 +30,7 @@ toward Benevolence enrollment heavily — see "Open idea, not yet scoped" below.
 - **Frontend**: `J:\frontend\ushirika-main\ushirika-connect-main` — TanStack Start / React /
   TypeScript. Git remote `MdauCodes/ushirika-connect`, branch `main`. Deployed on **Vercel** at
   `https://ushirikacommunity.site` — pushing to `main` auto-deploys (typically live within ~60s).
-- Both repos are clean and pushed as of this update (backend `443a398`, frontend `9e87c8b`).
+- Both repos are clean and pushed as of this update (backend `6918736`, frontend `e8d2ff2`).
 - Admin panel lives inside the frontend app at `/admin/*`. Public site, member portal
   (`/portal/*`), and applicant onboarding (`/membership?apply=1` → enquiry → emailed login →
   `/onboarding`) are all the same frontend app, gated by role.
@@ -605,6 +605,55 @@ access. Their screenshots + a downloaded Dues Report PDF confirmed two things at
    correctly PENDING with due dates still 1-4 months out — normal for a fresh approval, not a
    defect. Flagged for the user (not acted on): is `UW-2026-0001` meant to be a real member record,
    or should it be excluded from dues/member counts as a placeholder? Their call, not fixed.
+
+### 2026-09-11: duplicate-application fixes, retry/audit tooling, "pay for another member"
+
+A support incident (member applied twice — wrong email, then right one — and the admin could
+neither send the form nor remove the bad entry) drove a run of related work:
+
+- **`sendForm` phone pre-check + Void action** (`29ec11e` / `030e187`): `MembershipService.sendForm`
+  now checks `users.phone` (UNIQUE, like email) before inserting the applicant account and returns
+  a plain 409 naming the clash instead of a raw DataIntegrityViolation. New
+  `ApplicationStatus.VOIDED` + `voidApplication()` / `POST /admin/membership/applications/{id}/void`
+  — dismiss a duplicate, tearing down any bare APPLICANT account it created so the email/phone are
+  freed. Works post-send-form (unlike reject, which is SUBMITTED-only). Frontend: Void button +
+  "Voided" tab; also fixed `StatusBadge` (was keyed lowercase, passed UPPERCASE — every badge was
+  the same neutral colour).
+- **Email-log Retry** (`1432e36` / `324c9f6`): `POST /admin/notifications/logs/{id}/retry`
+  re-sends a FAILED email using its stored recipient/subject/body; Retry button on the Delivery
+  Logs page. Sends are `@Async` (outside the tx), so a Brevo outage can't roll back a membership
+  action — this is the catch-up path.
+- **Configurable settlement priority** (`c10eaa4` / `5405d12`): the pooled-payment order (fines →
+  dues → MGR → benevolence replenishment → benevolence enrollment) is now stored on
+  `platform_settings.settlement_priority` (nullable; ddl-auto adds it; falls back to the default in
+  code) and reorderable in admin Settings. `PaymentAllocationService` loops the configured order.
+- **Structured audit-log target fields** (`e9bfde6` / `e445c28`): `audit_logs.target_label` +
+  `target_ref` (the person/record an action was about + their id, distinct from the actor). New
+  `AuditLogService.logAbout(...)` overload; the two existing `log(...)` signatures unchanged so
+  none of the ~145 call sites break. **Only the membership module is wired so far** (FORM_SENT,
+  FORM_CREDENTIALS_RESENT, APPLICATION_REJECTED/VOIDED, MEMBERSHIP_APPROVED, REGISTRATION_FEE_WAIVED)
+  — every other module still uses plain `log()` and shows an empty Subject column until wired,
+  module by module. Frontend: "Entity" column → "Subject" (name + ref + type).
+- **"Pay for another member"** (`6918736` / `e8d2ff2`): a member pays any amount toward another
+  member's account, no say in what it covers. New `PEER_CONTRIBUTION` basket ledger — payer is the
+  Stripe payer, basket member is the recipient, amount settles the recipient's obligations through
+  the normal pooled `applyPayment` (so it auto-covers fines → dues → … then leaves credit).
+  `PeerContribution` entity written only on webhook completion; recipient notified (in-app +
+  email); audit-logged `PEER_CONTRIBUTION_RECEIVED`. `/payments/on-behalf` endpoints: members
+  search, checkout, received, sent. Portal payments page gets a "Pay for another member" card +
+  "Paid on my behalf" list. Guards: recipient active member, payer ≠ recipient, min $5.
+
+**Pay-on-behalf remaining (Phase 4):** an "actively direct my surplus credit" screen — push credit
+toward MGR / benevolence *ahead of schedule*, not just wait for it to auto-apply. Deferred: needs
+new pre-payment capability in `MgrService` / `BenevolenceEnrollmentService` (they only accept
+payment against what's currently due). The credit *is* already shown + explained on the portal
+payments page ("You're paid ahead — this credit will automatically cover whatever comes due next").
+
+**Open / flagged, not acted on:**
+- Barbara Weke's two live applications still need the org to confirm which email is hers, then void
+  the other one (via the new Void button) and Send Form on the keeper.
+- Structured audit `target_*` fields only cover the membership module — extend module by module.
+- `UW-2026-0001` "Ushirika Welfare" — real member or system placeholder? Skews Waived/Active counts.
 
 ## Next up: resume the paused live-testing thread
 
