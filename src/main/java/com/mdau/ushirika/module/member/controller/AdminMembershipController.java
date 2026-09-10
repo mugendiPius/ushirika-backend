@@ -7,6 +7,7 @@ import com.mdau.ushirika.module.member.dto.AdminReviewRequest;
 import com.mdau.ushirika.module.member.dto.BulkActionResultDto;
 import com.mdau.ushirika.module.member.dto.BulkApplicationActionRequest;
 import com.mdau.ushirika.module.member.dto.BulkApproveRequest;
+import com.mdau.ushirika.module.member.dto.VoidApplicationRequest;
 import com.mdau.ushirika.module.member.enums.ApplicationStatus;
 import com.mdau.ushirika.module.member.service.MembershipService;
 import io.swagger.v3.oas.annotations.Operation;
@@ -94,6 +95,22 @@ public class AdminMembershipController {
         boolean isSuperAdmin = auth.getAuthorities().stream()
                 .anyMatch(a -> a.getAuthority().equals("ROLE_SUPERADMIN"));
         return ResponseEntity.ok(ApiResponse.ok("Onboarding credentials resent", membershipService.resendFormCredentials(id, isSuperAdmin)));
+    }
+
+    @PostMapping("/applications/{id}/void")
+    @Operation(summary = "Void an invalid application (e.g. a duplicate / wrong-email entry). Removes any "
+            + "auto-created applicant account that never progressed, freeing its email & phone. Unlike reject, "
+            + "this also works after the form has been sent.")
+    public ResponseEntity<ApiResponse<AdminApplicationDto>> voidApplication(
+            @PathVariable UUID id,
+            @RequestBody(required = false) VoidApplicationRequest req,
+            Authentication auth
+    ) {
+        boolean isSuperAdmin = auth.getAuthorities().stream()
+                .anyMatch(a -> a.getAuthority().equals("ROLE_SUPERADMIN"));
+        String reason = req != null ? req.reason() : null;
+        return ResponseEntity.ok(ApiResponse.ok("Application voided",
+                membershipService.voidApplication(id, isSuperAdmin, reason)));
     }
 
     @PostMapping("/applications/{id}/approve-membership")

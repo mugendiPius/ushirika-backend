@@ -246,6 +246,86 @@ public class MembershipService {
     }
 
     /**
+     * Dismiss an application as invalid — the intended tool for a duplicate or a wrong-email
+     * entry, where "reject" is both semantically wrong and (once the form has been sent)
+     * unavailable. Any applicant account that was auto-created at send-form time and never
+     * progressed is deleted here so its UNIQUE email/phone are freed and a corrected application
+     * can go through. Refuses when there's real progress to lose (payment submitted, onboarding
+     * finished, already an approved member, or the account is no longer a bare APPLICANT).
+     */
+    @Transactional
+    public AdminApplicationDto voidApplication(UUID applicationId, boolean isSuperAdmin, String reason) {
+        User admin = currentUser();
+        MembershipApplication application = findApplicationById(applicationId);
+        ApplicationStatus status = application.getStatus();
+
+        if (status == ApplicationStatus.VOIDED) {
+            throw new BadRequestException("This application has already been voided.");
+        }
+        if (status == ApplicationStatus.APPROVED) {
+            throw new BadRequestException(
+                    "This applicant is already an approved member — voiding the application would leave their "
+                    + "membership inconsistent. Resolve this one manually.");
+        }
+        if (status == ApplicationStatus.PAYMENT_SUBMITTED
+                || (status == ApplicationStatus.ONBOARDING_IN_PROGRESS && isOnboardingComplete(application))) {
+            throw new BadRequestException(
+                    "This applicant has already submitted payment or finished onboarding — voiding would discard "
+                    + "real progress. Resolve this one manually.");
+        }
+
+        User applicant = application.getUser();
+        boolean removedAccount = false;
+        if (applicant != null) {
+            if (applicant.getRole() != UserRole.APPLICANT) {
+                throw new BadRequestException(
+                        "The account linked to this application is no longer a plain applicant (role: "
+                        + applicant.getRole() + "). Void refused — resolve this one manually.");
+            }
+            // Detach first so the FK doesn't block the delete, then remove the bare account +
+            // its empty profile to release the unique email/phone.
+            application.setUser(null);
+            applicationRepository.saveAndFlush(application);
+            try {
+                profileRepository.findByUser(applicant).ifPresent(p -> {
+                    profileRepository.delete(p);
+                    profileRepository.flush();
+                });
+                userRepository.delete(applicant);
+                userRepository.flush();
+                removedAccount = true;
+            } catch (org.springframework.dao.DataIntegrityViolationException ex) {
+                throw new ConflictException(
+                        "Couldn't remove the applicant's account automatically — it has other linked records. "
+                        + "This one needs manual cleanup.");
+            }
+        }
+
+        String note = (reason != null && !reason.isBlank()) ? reason.trim() : null;
+        application.setStatus(ApplicationStatus.VOIDED);
+        application.setReviewedAt(LocalDateTime.now());
+        application.setRejectionReason(note != null ? note : "Voided by an administrator.");
+        applicationRepository.save(application);
+
+        auditLogService.log(admin, "APPLICATION_VOIDED", "MembershipApplication", application.getId(),
+                "Application " + application.getReferenceNumber() + " voided by " + admin.getFullName()
+                + (removedAccount ? " — linked applicant account removed" : "")
+                + (note != null ? " — reason: " + note : ""));
+
+        return AdminApplicationDto.from(application, isSuperAdmin);
+    }
+
+    /** Same six checkpoints as {@link #requireOnboardingComplete}, as a plain boolean. */
+    private boolean isOnboardingComplete(MembershipApplication a) {
+        return a.getEmailReverifiedAt() != null
+                && a.getIdentityInfoSubmittedAt() != null
+                && a.getAddressInfoSubmittedAt() != null
+                && a.getKinContactsSubmittedAt() != null
+                && a.getConstitutionAcceptedAt() != null
+                && a.getBylawsAcceptedAt() != null;
+    }
+
+    /**
      * Admin accepts the application in principle: creates (or demotes) the applicant's
      * account to APPLICANT role and emails them onboarding login credentials. This does
      * NOT grant membership — see {@link #approveMembership}.
@@ -274,11 +354,25 @@ public class MembershipService {
             // Public/anonymous applicant — create their account now, scoped to APPLICANT.
             String email = application.getApplicantEmail();
             if (email == null || email.isBlank()) {
-                throw new BadRequestException("Cannot send form — no email on record for this application.");
+                throw new BadRequestException("Cannot send the form — this application has no email address on record.");
             }
             email = email.toLowerCase().trim();
+            // Both email and phone are UNIQUE on the users table. Check each up-front so the admin
+            // gets a plain, actionable message instead of a raw DB constraint violation surfacing
+            // as the generic "a record with this information already exists".
             if (userRepository.existsByEmail(email)) {
-                throw new ConflictException("An account with email " + email + " already exists.");
+                throw new ConflictException(
+                        "Cannot send the form — an account with the email " + email + " already exists. "
+                        + "This applicant most likely has a duplicate application; void that one, then send the form from this one.");
+            }
+            String applicantPhone = application.getApplicantPhone();
+            if (applicantPhone == null || applicantPhone.isBlank()) {
+                throw new BadRequestException("Cannot send the form — this application has no phone number on record.");
+            }
+            if (userRepository.existsByPhone(applicantPhone)) {
+                throw new ConflictException(
+                        "Cannot send the form — an account with the phone number " + applicantPhone + " already exists. "
+                        + "This applicant most likely has a duplicate application; void that one, then send the form from this one.");
             }
 
             String fullName = application.getApplicantName() != null ? application.getApplicantName().trim() : "Applicant";
@@ -291,7 +385,7 @@ public class MembershipService {
                     .middleName(application.getApplicantMiddleName())
                     .lastName(lastName)
                     .email(email)
-                    .phone(application.getApplicantPhone())
+                    .phone(applicantPhone)
                     .password(passwordEncoder.encode(tempPassword))
                     .role(UserRole.APPLICANT)
                     .emailVerified(true)
