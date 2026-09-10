@@ -69,6 +69,8 @@ class PaymentBasketServiceTest {
     @Mock private com.mdau.ushirika.module.audit.service.AuditLogService auditLogService;
     @Mock private com.mdau.ushirika.module.notification.service.InAppNotificationService notificationService;
     @Mock private com.mdau.ushirika.module.notification.service.EmailService emailService;
+    @Mock private com.mdau.ushirika.module.payment.repository.PeerContributionRepository peerContributionRepository;
+    @Mock private com.mdau.ushirika.module.member.repository.MemberProfileRepository memberProfileRepository;
 
     private PaymentBasketService service;
     private User member;
@@ -80,7 +82,7 @@ class PaymentBasketServiceTest {
                 membershipDuesService, benevolenceEnrollmentService, mgrService,
                 fineService, benevolenceClaimService, programApplicationService, contributionService,
                 platformSettingsService, paymentAllocationService, auditLogService, notificationService,
-                emailService);
+                emailService, peerContributionRepository, memberProfileRepository);
 
         when(platformSettingsService.getRegistrationFeeAmount()).thenReturn(new BigDecimal("100.00"));
 
@@ -310,6 +312,69 @@ class PaymentBasketServiceTest {
         // The pooled allocation failing doesn't stop the independent general-contribution line.
         verify(contributionService).applyBasketContribution(member, new BigDecimal("20.00"), planId);
         assertEquals(PaymentStatus.SUCCESS, basket.getStatus(), "basket is still marked paid — Stripe was actually charged");
+    }
+
+    // ── Pay on behalf ────────────────────────────────────────────────────────
+
+    @Test
+    void onBehalf_payingYourself_rejected() {
+        var req = new com.mdau.ushirika.module.payment.dto.OnBehalfCheckoutRequest(
+                member.getId(), new BigDecimal("20.00"), "s", "c", null);
+        when(userRepository.findById(member.getId())).thenReturn(Optional.of(member));
+
+        assertThrows(com.mdau.ushirika.common.exception.BadRequestException.class,
+                () -> service.startOnBehalfCheckout(req));
+        verify(basketRepository, never()).save(any());
+    }
+
+    @Test
+    void onBehalf_inactiveRecipient_rejected() {
+        User recipient = User.builder().email("r@test.ushirika.org").role(UserRole.MEMBER).active(false).build();
+        recipient.setId(UUID.randomUUID());
+        when(userRepository.findById(recipient.getId())).thenReturn(Optional.of(recipient));
+        var req = new com.mdau.ushirika.module.payment.dto.OnBehalfCheckoutRequest(
+                recipient.getId(), new BigDecimal("20.00"), "s", "c", null);
+
+        assertThrows(com.mdau.ushirika.common.exception.BadRequestException.class,
+                () -> service.startOnBehalfCheckout(req));
+    }
+
+    @Test
+    void onBehalf_activeMember_buildsBasketCreditingTheRecipient() {
+        User recipient = User.builder().firstName("Ada").lastName("Nyar").email("ada@test.ushirika.org")
+                .role(UserRole.MEMBER).active(true).build();
+        recipient.setId(UUID.randomUUID());
+        when(userRepository.findById(recipient.getId())).thenReturn(Optional.of(recipient));
+        var req = new com.mdau.ushirika.module.payment.dto.OnBehalfCheckoutRequest(
+                recipient.getId(), new BigDecimal("30.00"), "s", "c", null);
+
+        service.startOnBehalfCheckout(req);
+
+        var captor = org.mockito.ArgumentCaptor.forClass(PaymentBasket.class);
+        verify(basketRepository).save(captor.capture());
+        PaymentBasket saved = captor.getValue();
+        assertEquals(recipient.getId(), saved.getMember().getId(), "basket member is the recipient, not the payer");
+        assertEquals(PaymentBasketLedger.PEER_CONTRIBUTION, saved.getLines().get(0).getLedger());
+        assertEquals(member.getId(), saved.getLines().get(0).getTargetId(), "line targetId carries the payer id");
+    }
+
+    @Test
+    void webhook_peerContribution_creditsRecipientPoolAndRecordsIt() {
+        User recipient = User.builder().firstName("Ada").lastName("Nyar").email("ada@test.ushirika.org")
+                .role(UserRole.MEMBER).active(true).build();
+        recipient.setId(UUID.randomUUID());
+        PaymentBasket basket = basketOf(recipient, PaymentStatus.PENDING,
+                line(PaymentBasketLedger.PEER_CONTRIBUTION, member.getId(), new BigDecimal("40.00")));
+        when(basketRepository.findBySessionId("cs_peer")).thenReturn(Optional.of(basket));
+        when(userRepository.findById(member.getId())).thenReturn(Optional.of(member));
+        Session session = mock(Session.class);
+        when(session.getId()).thenReturn("cs_peer");
+
+        service.handleSessionCompleted(session);
+
+        verify(paymentAllocationService).applyPayment(recipient, new BigDecimal("40.00"));
+        verify(peerContributionRepository).save(any(com.mdau.ushirika.module.payment.entity.PeerContribution.class));
+        verify(notificationService).notifyMember(eq(recipient.getId()), any());
     }
 
     // ── Helpers ──────────────────────────────────────────────────────────────

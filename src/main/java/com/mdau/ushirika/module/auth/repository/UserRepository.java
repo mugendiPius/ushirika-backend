@@ -2,6 +2,7 @@ package com.mdau.ushirika.module.auth.repository;
 
 import com.mdau.ushirika.module.auth.entity.User;
 import com.mdau.ushirika.module.auth.enums.UserRole;
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
@@ -41,4 +42,19 @@ public interface UserRepository extends JpaRepository<User, UUID> {
            "LOWER(CONCAT(u.firstName, ' ', u.lastName)) = LOWER(:fullName) OR " +
            "LOWER(CONCAT(u.lastName, ' ', u.firstName)) = LOWER(:fullName)")
     Optional<User> findByFullNameIgnoreCase(@Param("fullName") String fullName);
+
+    /** Type-ahead over active members for the "pay for another member" picker — matches first
+     *  name, last name, "first last", or email, case-insensitively; excludes the searcher. */
+    @Query("""
+            SELECT u FROM User u
+            WHERE u.role = com.mdau.ushirika.module.auth.enums.UserRole.MEMBER
+              AND u.active = true
+              AND u.id <> :excludeId
+              AND ( LOWER(u.firstName) LIKE LOWER(CONCAT('%', :q, '%'))
+                 OR LOWER(u.lastName)  LIKE LOWER(CONCAT('%', :q, '%'))
+                 OR LOWER(CONCAT(u.firstName, ' ', u.lastName)) LIKE LOWER(CONCAT('%', :q, '%'))
+                 OR LOWER(u.email) LIKE LOWER(CONCAT('%', :q, '%')) )
+            ORDER BY u.firstName, u.lastName
+            """)
+    List<User> searchActiveMembers(@Param("q") String q, @Param("excludeId") UUID excludeId, Pageable pageable);
 }

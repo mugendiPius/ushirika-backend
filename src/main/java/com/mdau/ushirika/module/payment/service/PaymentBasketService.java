@@ -78,6 +78,8 @@ public class PaymentBasketService {
     private final AuditLogService auditLogService;
     private final InAppNotificationService notificationService;
     private final EmailService emailService;
+    private final com.mdau.ushirika.module.payment.repository.PeerContributionRepository peerContributionRepository;
+    private final com.mdau.ushirika.module.member.repository.MemberProfileRepository memberProfileRepository;
 
     @Value("${app.site-url:https://ushirikacommunity.site}")
     private String siteUrl;
@@ -266,6 +268,56 @@ public class PaymentBasketService {
 
         log.info("Cash payment checkout created: sessionId={} member={} admin={} amount={} USD",
                 result.sessionId(), targetMember.getEmail(), admin.getEmail(), req.amount());
+
+        return new PaymentInitDto(result.sessionId(), result.checkoutUrl(), req.amount(), "USD");
+    }
+
+    /**
+     * One member paying an amount toward another member's account. The payer completes the
+     * resulting Stripe checkout with their own card; the recipient is credited only once it
+     * clears, via the same pooled settlement as any other payment (fines -> dues -> ... in the
+     * platform-configured order), leftover held as their credit. The payer never sees the
+     * recipient's balances -- they just pick a member and an amount.
+     */
+    @Transactional
+    public PaymentInitDto startOnBehalfCheckout(com.mdau.ushirika.module.payment.dto.OnBehalfCheckoutRequest req) {
+        User payer = currentUser();
+        User recipient = userRepository.findById(req.recipientId())
+                .orElseThrow(() -> new ResourceNotFoundException("Member not found: " + req.recipientId()));
+
+        if (recipient.getId().equals(payer.getId())) {
+            throw new BadRequestException("Use the normal payment flow to pay your own balances.");
+        }
+        if (recipient.getRole() != UserRole.MEMBER || !recipient.isActive()) {
+            throw new BadRequestException("You can only pay on behalf of an active member.");
+        }
+
+        List<StripeService.LineItem> stripeLines = List.of(new StripeService.LineItem(
+                "Ushirika Welfare Organization — Payment for " + recipient.getFullName(), req.amount()));
+        Map<String, String> metadata = Map.of(
+                "purpose", "BASKET",
+                "memberId", recipient.getId().toString());
+
+        StripeService.StripeCheckoutResult result = resolveCheckout(
+                payer.getEmail(), stripeLines, req.successUrl(), req.cancelUrl(), metadata, req.paymentMethod());
+
+        PaymentBasket basket = PaymentBasket.builder()
+                .member(recipient)
+                .sessionId(result.sessionId())
+                .build();
+        basket.getLines().add(PaymentBasketLine.builder()
+                .basket(basket)
+                .ledger(PaymentBasketLedger.PEER_CONTRIBUTION)
+                // targetId carries the payer's id -- completeBasket() has no authenticated request
+                // to read it from at webhook time, same trick CASH_PAYMENT uses for the admin.
+                .targetId(payer.getId())
+                .description("Paid on behalf of " + recipient.getFullName() + " by " + payer.getFullName())
+                .amount(req.amount())
+                .build());
+        basketRepository.save(basket);
+
+        log.info("On-behalf checkout created: sessionId={} payer={} recipient={} amount={} USD",
+                result.sessionId(), payer.getEmail(), recipient.getEmail(), req.amount());
 
         return new PaymentInitDto(result.sessionId(), result.checkoutUrl(), req.amount(), "USD");
     }
@@ -492,6 +544,11 @@ public class PaymentBasketService {
                 .findFirst()
                 .ifPresent(cashLine -> notifyCashPaymentProcessed(basket.getMember(), cashLine));
 
+        basket.getLines().stream()
+                .filter(l -> l.getLedger() == PaymentBasketLedger.PEER_CONTRIBUTION)
+                .findFirst()
+                .ifPresent(peerLine -> recordPeerContribution(basket, peerLine));
+
         notifyFinanceOfPayment(basket);
 
         log.info("Payment basket confirmed [{}]: id={} sessionId={} member={} lines={}",
@@ -571,6 +628,49 @@ public class PaymentBasketService {
         }
     }
 
+    /** On-behalf-specific side effects once the pooled allocation has already credited the
+     * recipient: persist the PeerContribution record and tell the recipient who paid. The audit
+     * line is attributed to the payer, targeted at the recipient. */
+    private void recordPeerContribution(PaymentBasket basket, PaymentBasketLine peerLine) {
+        User recipient = basket.getMember();
+        User payer = peerLine.getTargetId() != null
+                ? userRepository.findById(peerLine.getTargetId()).orElse(null) : null;
+        if (payer == null) {
+            log.warn("PEER_CONTRIBUTION line on basket {} has no resolvable payer -- skipping record/notify", basket.getId());
+            return;
+        }
+
+        try {
+            peerContributionRepository.save(com.mdau.ushirika.module.payment.entity.PeerContribution.builder()
+                    .payer(payer)
+                    .recipient(recipient)
+                    .amount(peerLine.getAmount())
+                    .currency("USD")
+                    .sessionId(basket.getSessionId())
+                    .build());
+        } catch (Exception e) {
+            log.error("Failed to save PeerContribution for basket {}: {}", basket.getId(), e.getMessage());
+        }
+
+        try {
+            notificationService.notifyMember(recipient.getId(), new BroadcastRequest(
+                    InAppNotificationCategory.GENERAL,
+                    "Payment made on your behalf",
+                    payer.getFullName() + " paid $" + peerLine.getAmount() + " toward your account. "
+                            + "It's been applied to your outstanding balances; anything left over is now credit on your account.",
+                    "/portal/payments",
+                    Set.of("EMAIL")));
+        } catch (Exception e) {
+            log.warn("On-behalf recipient notification failed for {}: {}", recipient.getEmail(), e.getMessage());
+        }
+
+        String recipientRef = memberProfileRepository.findByUser(recipient)
+                .map(com.mdau.ushirika.module.member.entity.MemberProfile::getMemberId).orElse(null);
+        auditLogService.logAbout(payer, "PEER_CONTRIBUTION_RECEIVED", "PeerContribution", basket.getId(),
+                recipient.getFullName(), recipientRef,
+                payer.getFullName() + " paid $" + peerLine.getAmount() + " on behalf of " + recipient.getFullName());
+    }
+
     /** Obligations settled through the pooled PaymentAllocationService rather than credited to
      * the specific line they arrived on. Registration fee, program prepayment, and general
      * contributions stay outside the pool — the first two are one-time onboarding gates, and
@@ -579,7 +679,7 @@ public class PaymentBasketService {
     private boolean isWalletEligible(PaymentBasketLedger ledger) {
         return switch (ledger) {
             case DUES, MGR_CONTRIBUTION, FINE, BENEVOLENCE_REPLENISHMENT, BENEVOLENCE_ENROLLMENT,
-                 CASH_PAYMENT, CARD_ENTERED_BY_ADMIN -> true;
+                 CASH_PAYMENT, CARD_ENTERED_BY_ADMIN, PEER_CONTRIBUTION -> true;
             case REGISTRATION_FEE, PROGRAM_APPLICATION_PREPAY, GENERAL_CONTRIBUTION,
                  BENEVOLENCE_APPLICATION_FEE -> false;
         };
@@ -611,6 +711,7 @@ public class PaymentBasketService {
             case GENERAL_CONTRIBUTION -> "Ushirika Welfare Organization — Contribution";
             case CASH_PAYMENT -> "Ushirika Welfare Organization — Cash Payment";
             case CARD_ENTERED_BY_ADMIN -> "Ushirika Welfare Organization — Card Payment (entered by admin)";
+            case PEER_CONTRIBUTION -> "Ushirika Welfare Organization — Payment on behalf of a member";
         };
     }
 

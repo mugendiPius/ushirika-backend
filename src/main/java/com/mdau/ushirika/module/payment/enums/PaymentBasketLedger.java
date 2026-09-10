@@ -30,5 +30,10 @@ public enum PaymentBasketLedger {
     /** An admin entering the member's own card details directly (relayed by phone or in person)
      * via Stripe Elements — the member's card pays, not the admin's. Kept distinct from
      * CASH_PAYMENT so reports can tell the two apart; pooled the same way otherwise. */
-    CARD_ENTERED_BY_ADMIN
+    CARD_ENTERED_BY_ADMIN,
+    /** One member paying an amount toward another member's account. The payer is the Stripe
+     * payer; the basket's member is the recipient, whose obligations it settles via
+     * PaymentAllocationService like any other pooled ledger. targetId carries the payer's id so
+     * completeBasket can record the PeerContribution and notify the recipient. */
+    PEER_CONTRIBUTION
 }
