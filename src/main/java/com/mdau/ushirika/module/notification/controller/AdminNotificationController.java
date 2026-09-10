@@ -1,5 +1,6 @@
 package com.mdau.ushirika.module.notification.controller;
 
+import com.mdau.ushirika.common.exception.BadRequestException;
 import com.mdau.ushirika.common.exception.ResourceNotFoundException;
 import com.mdau.ushirika.common.response.ApiResponse;
 import com.mdau.ushirika.common.response.PagedResponse;
@@ -8,9 +9,11 @@ import com.mdau.ushirika.module.auth.entity.User;
 import com.mdau.ushirika.module.auth.repository.UserRepository;
 import com.mdau.ushirika.module.notification.dto.BroadcastRequest;
 import com.mdau.ushirika.module.notification.dto.NotificationLogDto;
+import com.mdau.ushirika.module.notification.entity.NotificationLog;
 import com.mdau.ushirika.module.notification.enums.NotificationChannel;
 import com.mdau.ushirika.module.notification.enums.NotificationStatus;
 import com.mdau.ushirika.module.notification.repository.NotificationLogRepository;
+import com.mdau.ushirika.module.notification.service.EmailService;
 import com.mdau.ushirika.module.notification.service.InAppNotificationService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.security.SecurityRequirement;
@@ -38,6 +41,7 @@ public class AdminNotificationController {
     private final InAppNotificationService   notificationService;
     private final UserRepository             userRepository;
     private final AuditLogService            auditLogService;
+    private final EmailService               emailService;
 
     @GetMapping("/logs")
     @PreAuthorize("hasAnyAuthority('ROLE_ADMIN','ROLE_SUPERADMIN','ROLE_FINANCIAL_ADMIN','ROLE_FINANCIAL_OFFICIAL','CAP_NOTIFICATIONS')")
@@ -89,6 +93,36 @@ public class AdminNotificationController {
                 "Notification \"" + req.title() + "\" sent to one member by " + admin.getFullName());
 
         return ResponseEntity.ok(ApiResponse.ok("Notification sent"));
+    }
+
+    @PostMapping("/logs/{id}/retry")
+    @PreAuthorize("hasAnyAuthority('ROLE_ADMIN','ROLE_SUPERADMIN','CAP_NOTIFICATIONS')")
+    @Operation(summary = "Re-send a logged email using its stored recipient/subject/body -- for one that "
+            + "failed to go out after its action had already committed (email is sent async, outside the "
+            + "transaction). Fires a fresh attempt, which writes its own new log row.")
+    public ResponseEntity<ApiResponse<Void>> retryLog(@PathVariable UUID id, Authentication auth) {
+        NotificationLog log = logRepository.findById(id)
+                .orElseThrow(() -> new ResourceNotFoundException("Notification log not found: " + id));
+
+        if (log.getChannel() != NotificationChannel.EMAIL) {
+            throw new BadRequestException("Only email notifications can be re-sent from here.");
+        }
+        if (log.getStatus() == NotificationStatus.PENDING) {
+            throw new BadRequestException("This email is still being attempted — give it a moment before retrying.");
+        }
+        if (log.getBody() == null || log.getBody().isBlank()) {
+            throw new BadRequestException("This log has no stored message body to re-send.");
+        }
+
+        emailService.sendPlain(log.getRecipient(), log.getRecipientName(), log.getSubject(), log.getBody());
+
+        User admin = userRepository.findByEmail(auth.getName())
+                .orElseThrow(() -> new ResourceNotFoundException("Authenticated user not found."));
+        auditLogService.log(admin, "NOTIFICATION_RETRIED", "NotificationLog", id,
+                "Re-sent email \"" + log.getSubject() + "\" to " + log.getRecipient()
+                        + " (originally " + log.getStatus() + ") by " + admin.getFullName());
+
+        return ResponseEntity.ok(ApiResponse.ok("Email re-queued for " + log.getRecipient()));
     }
 
     @GetMapping("/logs/recipient")

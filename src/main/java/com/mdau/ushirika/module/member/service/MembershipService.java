@@ -240,7 +240,8 @@ public class MembershipService {
         applicationRepository.save(application);
 
         auditLogService.log(admin, "APPLICATION_REJECTED", "MembershipApplication", application.getId(),
-                "Application " + application.getReferenceNumber() + " rejected by " + admin.getFullName());
+                "Application " + application.getReferenceNumber() + " from " + applicantLabel(application)
+                        + " rejected by " + admin.getFullName());
 
         return AdminApplicationDto.from(application, isSuperAdmin);
     }
@@ -273,6 +274,9 @@ public class MembershipService {
                     "This applicant has already submitted payment or finished onboarding — voiding would discard "
                     + "real progress. Resolve this one manually.");
         }
+
+        // Captured before we (maybe) detach the account below, so the audit line still names them.
+        String who = applicantLabel(application);
 
         User applicant = application.getUser();
         boolean removedAccount = false;
@@ -308,11 +312,20 @@ public class MembershipService {
         applicationRepository.save(application);
 
         auditLogService.log(admin, "APPLICATION_VOIDED", "MembershipApplication", application.getId(),
-                "Application " + application.getReferenceNumber() + " voided by " + admin.getFullName()
+                "Application " + application.getReferenceNumber() + " from " + who + " voided by " + admin.getFullName()
                 + (removedAccount ? " — linked applicant account removed" : "")
                 + (note != null ? " — reason: " + note : ""));
 
         return AdminApplicationDto.from(application, isSuperAdmin);
+    }
+
+    /** "Name &lt;email&gt;" for an application — works for both public and logged-in applicants.
+     * Used so audit-log lines name the person the action was about, not just a reference number. */
+    private String applicantLabel(MembershipApplication app) {
+        String name = app.getUser() != null ? app.getUser().getFullName() : app.getApplicantName();
+        String email = app.getUser() != null ? app.getUser().getEmail() : app.getApplicantEmail();
+        if (name == null || name.isBlank()) name = "unnamed applicant";
+        return (email != null && !email.isBlank()) ? name + " <" + email + ">" : name;
     }
 
     /** Same six checkpoints as {@link #requireOnboardingComplete}, as a plain boolean. */
@@ -437,10 +450,12 @@ public class MembershipService {
                 waiveRegistrationFee ? " (registration fee pre-waived)" : "");
 
         auditLogService.log(admin, "FORM_SENT", "MembershipApplication", application.getId(),
-                "Onboarding form sent for application " + application.getReferenceNumber() + " by " + admin.getFullName());
+                "Onboarding form sent to " + applicantLabel(application)
+                        + " (application " + application.getReferenceNumber() + ") by " + admin.getFullName());
         if (waiveRegistrationFee) {
             auditLogService.log(admin, "REGISTRATION_FEE_WAIVED", "MembershipApplication", application.getId(),
-                    "Registration fee pre-waived at send-form for " + application.getReferenceNumber() + " by " + admin.getFullName());
+                    "Registration fee pre-waived at send-form for " + applicantLabel(application)
+                            + " (application " + application.getReferenceNumber() + ") by " + admin.getFullName());
         }
 
         return AdminApplicationDto.from(application, isSuperAdmin);
@@ -481,7 +496,8 @@ public class MembershipService {
 
         User admin = currentUser();
         auditLogService.log(admin, "FORM_CREDENTIALS_RESENT", "MembershipApplication", application.getId(),
-                "Onboarding credentials resent for application " + application.getReferenceNumber() + " by " + admin.getFullName());
+                "Onboarding credentials resent to " + applicantLabel(application)
+                        + " (application " + application.getReferenceNumber() + ") by " + admin.getFullName());
 
         return AdminApplicationDto.from(application, isSuperAdmin);
     }
