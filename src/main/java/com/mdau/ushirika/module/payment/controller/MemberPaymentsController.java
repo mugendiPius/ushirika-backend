@@ -34,6 +34,12 @@ public class MemberPaymentsController {
         return ResponseEntity.ok(ApiResponse.ok(paymentBasketService.myBalance()));
     }
 
+    /** Apply credit sitting on my account to whatever I currently owe, now, in priority order. */
+    @PostMapping("/apply-credit")
+    public ResponseEntity<ApiResponse<MemberBalanceDto>> applyCredit() {
+        return ResponseEntity.ok(ApiResponse.ok(paymentBasketService.myApplyCredit()));
+    }
+
     @PostMapping("/checkout")
     public ResponseEntity<ApiResponse<PaymentInitDto>> checkout(@Valid @RequestBody PayBalancesRequest req) {
         return ResponseEntity.ok(ApiResponse.ok(paymentBasketService.startBalancesCheckout(

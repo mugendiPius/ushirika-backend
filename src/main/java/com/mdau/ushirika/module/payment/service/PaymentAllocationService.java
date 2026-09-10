@@ -51,9 +51,43 @@ public class PaymentAllocationService {
         if (amount == null || amount.signum() <= 0) return;
 
         MemberCreditBalance balance = getOrCreateBalance(member);
-        BigDecimal pool = balance.getCreditAmount().add(amount);
-        BigDecimal before = pool;
+        BigDecimal before = balance.getCreditAmount().add(amount);
+        BigDecimal after = settlePool(member, before);
+        balance.setCreditAmount(after);
+        creditBalanceRepository.save(balance);
 
+        log.info("Settled ${} for {} — ${} applied to outstanding obligations, ${} left as credit",
+                amount, member.getEmail(), before.subtract(after), after);
+    }
+
+    /**
+     * Re-runs settlement over the member's existing credit balance only (no new money) -- lets a
+     * member push credit that's sitting on their account (e.g. from an on-behalf payment) toward
+     * whatever is now outstanding, in the same platform priority order, without having to make
+     * another payment first. A no-op if they have no credit or nothing is due.
+     */
+    @Transactional
+    public MemberBalanceDto applyExistingCredit(User member) {
+        MemberCreditBalance balance = getOrCreateBalance(member);
+        BigDecimal before = balance.getCreditAmount();
+        if (before.signum() <= 0) return getBalance(member);
+
+        BigDecimal after = settlePool(member, before);
+        BigDecimal applied = before.subtract(after);
+        balance.setCreditAmount(after);
+        creditBalanceRepository.save(balance);
+
+        if (applied.signum() > 0) {
+            auditLogService.log(member, "CREDIT_APPLIED", "MemberCreditBalance", null,
+                    "$" + applied + " of credit applied to outstanding obligations for " + member.getFullName());
+        }
+        log.info("Applied existing credit for {} — ${} of ${} went to outstanding obligations, ${} left",
+                member.getEmail(), applied, before, after);
+        return getBalance(member);
+    }
+
+    /** The priority-ordered settlement loop, shared by a fresh payment and a credit re-apply. */
+    private BigDecimal settlePool(User member, BigDecimal pool) {
         for (SettlementBucket bucket : platformSettingsService.getSettlementPriority()) {
             if (pool.signum() <= 0) break;
             pool = switch (bucket) {
@@ -64,12 +98,7 @@ public class PaymentAllocationService {
                 case BENEVOLENCE_ENROLLMENT    -> settleBenevolenceEnrollment(member, pool);
             };
         }
-
-        balance.setCreditAmount(pool);
-        creditBalanceRepository.save(balance);
-
-        log.info("Settled ${} for {} — ${} applied to outstanding obligations, ${} left as credit",
-                amount, member.getEmail(), before.subtract(pool), pool);
+        return pool;
     }
 
     @Transactional(readOnly = true)

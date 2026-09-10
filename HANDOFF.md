@@ -643,16 +643,26 @@ neither send the form nor remove the bad entry) drove a run of related work:
   search, checkout, received, sent. Portal payments page gets a "Pay for another member" card +
   "Paid on my behalf" list. Guards: recipient active member, payer ≠ recipient, min $5.
 
-**Pay-on-behalf remaining (Phase 4):** an "actively direct my surplus credit" screen — push credit
-toward MGR / benevolence *ahead of schedule*, not just wait for it to auto-apply. Deferred: needs
-new pre-payment capability in `MgrService` / `BenevolenceEnrollmentService` (they only accept
-payment against what's currently due). The credit *is* already shown + explained on the portal
-payments page ("You're paid ahead — this credit will automatically cover whatever comes due next").
+- **Pay-on-behalf Phase 4 — "direct my surplus credit"** (uncommitted at time of writing → see
+  commit refs once pushed): a member can now push credit sitting on their account toward whatever
+  they currently owe *now*, in the platform priority order, instead of waiting for it to auto-apply
+  on their next payment. `PaymentAllocationService.applyExistingCredit(User)` re-pools the existing
+  `MemberCreditBalance` over the same `settlePool(...)` loop as a fresh payment (extracted so both
+  share it), audit-logs `CREDIT_APPLIED`, returns the refreshed `MemberBalanceDto`.
+  `POST /payments/my/apply-credit` (`MemberPaymentsController` → `PaymentBasketService.myApplyCredit`).
+  Portal payments page: an "Apply my $X credit now" button on the balance card, shown only when
+  `creditAmount > 0 && totalOutstanding > 0`. No new pre-payment primitive was needed after all —
+  MGR contribution rows for every month of the cycle already exist as PENDING, so the normal
+  settlement path already applies credit "ahead of schedule"; Phase 4 is just an on-demand re-run.
 
 **Open / flagged, not acted on:**
 - Barbara Weke's two live applications still need the org to confirm which email is hers, then void
   the other one (via the new Void button) and Send Form on the keeper.
-- Structured audit `target_*` fields only cover the membership module — extend module by module.
+- Structured audit `target_*` fields only cover the membership module — extend module by module
+  (dues, fines, MGR, benevolence, loans, scholarships, elections, welfare, reinstatement).
+- Deferred (user: "but first finish up with this"): a "fingerprint scan" view of the audit log —
+  colour-coded action categories (money-related = red, fines, meetings/appraisal, etc.) with a
+  category filter, so admins can scan what members and admins did at a glance.
 - `UW-2026-0001` "Ushirika Welfare" — real member or system placeholder? Skews Waived/Active counts.
 
 ## Next up: resume the paused live-testing thread

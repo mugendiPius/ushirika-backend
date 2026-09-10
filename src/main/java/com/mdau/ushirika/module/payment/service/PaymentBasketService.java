@@ -224,6 +224,13 @@ public class PaymentBasketService {
         return paymentAllocationService.getBalance(currentUser());
     }
 
+    /** Push whatever credit is sitting on my account toward my current obligations now, in the
+     * platform priority order — instead of waiting for it to auto-apply on my next payment. */
+    @Transactional
+    public MemberBalanceDto myApplyCredit() {
+        return paymentAllocationService.applyExistingCredit(currentUser());
+    }
+
     /**
      * An admin processing cash they physically received: the admin pays this exact amount
      * themselves via the resulting Stripe Checkout session (their own card, not the member's —

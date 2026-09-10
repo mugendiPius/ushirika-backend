@@ -159,6 +159,30 @@ class PaymentAllocationServiceTest {
     }
 
     @Test
+    void applyExistingCredit_settlesOutstandingFromCreditOnly_noNewMoney() {
+        MemberCreditBalance existing = MemberCreditBalance.builder().user(member).creditAmount(new BigDecimal("90.00")).build();
+        when(creditBalanceRepository.findByUser(member)).thenReturn(Optional.of(existing));
+        when(membershipDuesService.outstandingBalance(member)).thenReturn(new BigDecimal("100.00"));
+
+        service.applyExistingCredit(member);
+
+        // All $90 credit goes to dues (capped at what's owed), nothing left.
+        verify(membershipDuesService).applyExternalPayment(member, new BigDecimal("90.00"));
+        assertEquals(new BigDecimal("0.00"), existing.getCreditAmount());
+    }
+
+    @Test
+    void applyExistingCredit_noCredit_isANoOp() {
+        MemberCreditBalance existing = MemberCreditBalance.builder().user(member).creditAmount(BigDecimal.ZERO).build();
+        when(creditBalanceRepository.findByUser(member)).thenReturn(Optional.of(existing));
+        when(membershipDuesService.outstandingBalance(member)).thenReturn(new BigDecimal("100.00"));
+
+        service.applyExistingCredit(member);
+
+        verify(membershipDuesService, never()).applyExternalPayment(any(), any());
+    }
+
+    @Test
     void existingCreditIsPooledWithNewPayment() {
         MemberCreditBalance existing = MemberCreditBalance.builder().user(member).creditAmount(new BigDecimal("20.00")).build();
         when(creditBalanceRepository.findByUser(member)).thenReturn(Optional.of(existing));
