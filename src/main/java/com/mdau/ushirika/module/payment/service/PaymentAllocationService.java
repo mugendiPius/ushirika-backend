@@ -12,6 +12,7 @@ import com.mdau.ushirika.module.dues.service.MembershipDuesService;
 import com.mdau.ushirika.module.mgr.service.MgrService;
 import com.mdau.ushirika.module.payment.dto.MemberBalanceDto;
 import com.mdau.ushirika.module.payment.entity.MemberCreditBalance;
+import com.mdau.ushirika.module.payment.enums.SettlementBucket;
 import com.mdau.ushirika.module.payment.repository.MemberCreditBalanceRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -25,10 +26,11 @@ import java.util.Comparator;
  * Single settlement point for every dollar that lands on a member's account, regardless of
  * source (self-checkout or an admin processing a cash payment on their behalf). Money is never
  * earmarked at payment time -- it's pooled with whatever credit the member already has, then
- * applied in a fixed priority order (fines, then dues, then MGR, then Benevolence replenishment,
- * then Benevolence enrollment), oldest obligation first within each type. Anything left over
- * stays as credit for whatever comes due next; general contributions are logged separately
- * and never consume or receive credit, since they're voluntary rather than owed.
+ * applied in the platform-configured priority order (default: fines -> dues -> MGR ->
+ * Benevolence replenishment -> Benevolence enrollment; admin-editable in Settings via
+ * PlatformSettingsService.getSettlementPriority()), oldest obligation first within each type.
+ * Anything left over stays as credit for whatever comes due next; general contributions are
+ * logged separately and never consume or receive credit, since they're voluntary rather than owed.
  */
 @Slf4j
 @Service
@@ -42,6 +44,7 @@ public class PaymentAllocationService {
     private final BenevolenceClaimService benevolenceClaimService;
     private final BenevolenceEnrollmentService benevolenceEnrollmentService;
     private final AuditLogService auditLogService;
+    private final PlatformSettingsService platformSettingsService;
 
     @Transactional
     public void applyPayment(User member, BigDecimal amount) {
@@ -51,11 +54,16 @@ public class PaymentAllocationService {
         BigDecimal pool = balance.getCreditAmount().add(amount);
         BigDecimal before = pool;
 
-        pool = settleFines(member, pool);
-        pool = settleDues(member, pool);
-        pool = settleMgr(member, pool);
-        pool = settleReplenishments(member, pool);
-        pool = settleBenevolenceEnrollment(member, pool);
+        for (SettlementBucket bucket : platformSettingsService.getSettlementPriority()) {
+            if (pool.signum() <= 0) break;
+            pool = switch (bucket) {
+                case FINE                      -> settleFines(member, pool);
+                case DUES                      -> settleDues(member, pool);
+                case MGR                       -> settleMgr(member, pool);
+                case BENEVOLENCE_REPLENISHMENT -> settleReplenishments(member, pool);
+                case BENEVOLENCE_ENROLLMENT    -> settleBenevolenceEnrollment(member, pool);
+            };
+        }
 
         balance.setCreditAmount(pool);
         creditBalanceRepository.save(balance);

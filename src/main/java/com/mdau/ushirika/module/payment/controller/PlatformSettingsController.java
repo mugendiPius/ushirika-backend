@@ -4,9 +4,11 @@ import com.mdau.ushirika.common.response.ApiResponse;
 import com.mdau.ushirika.module.payment.dto.BenevolenceProbationDto;
 import com.mdau.ushirika.module.payment.dto.DisplayCurrencyDto;
 import com.mdau.ushirika.module.payment.dto.RegistrationFeeDto;
+import com.mdau.ushirika.module.payment.dto.SettlementPriorityDto;
 import com.mdau.ushirika.module.payment.dto.UpdateBenevolenceProbationRequest;
 import com.mdau.ushirika.module.payment.dto.UpdateDisplayCurrencyRequest;
 import com.mdau.ushirika.module.payment.dto.UpdateRegistrationFeeRequest;
+import com.mdau.ushirika.module.payment.dto.UpdateSettlementPriorityRequest;
 import com.mdau.ushirika.module.payment.service.PlatformSettingsService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.security.SecurityRequirement;
@@ -63,5 +65,20 @@ public class PlatformSettingsController {
     public ResponseEntity<ApiResponse<BenevolenceProbationDto>> updateBenevolenceProbation(@Valid @RequestBody UpdateBenevolenceProbationRequest req) {
         return ResponseEntity.ok(ApiResponse.ok("Benevolence probation period updated",
                 new BenevolenceProbationDto(settingsService.updateBenevolenceProbationMonths(req.months()))));
+    }
+
+    @GetMapping("/financial/settings/settlement-priority")
+    @SecurityRequirement(name = "bearerAuth")
+    @Operation(summary = "The order a pooled payment settles a member's obligations in")
+    public ResponseEntity<ApiResponse<SettlementPriorityDto>> settlementPriority() {
+        return ResponseEntity.ok(ApiResponse.ok(new SettlementPriorityDto(settingsService.getSettlementPriority())));
+    }
+
+    @PutMapping("/financial/settings/settlement-priority")
+    @SecurityRequirement(name = "bearerAuth")
+    @Operation(summary = "Reorder the payment settlement priority — ADMIN/SUPERADMIN and finance coordinators only")
+    public ResponseEntity<ApiResponse<SettlementPriorityDto>> updateSettlementPriority(@Valid @RequestBody UpdateSettlementPriorityRequest req) {
+        return ResponseEntity.ok(ApiResponse.ok("Settlement priority updated",
+                new SettlementPriorityDto(settingsService.updateSettlementPriority(req.order()))));
     }
 }

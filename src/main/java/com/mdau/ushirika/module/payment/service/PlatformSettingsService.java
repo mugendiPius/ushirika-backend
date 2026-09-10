@@ -8,6 +8,7 @@ import com.mdau.ushirika.module.auth.entity.User;
 import com.mdau.ushirika.module.auth.enums.UserRole;
 import com.mdau.ushirika.module.auth.repository.UserRepository;
 import com.mdau.ushirika.module.payment.entity.PlatformSettings;
+import com.mdau.ushirika.module.payment.enums.SettlementBucket;
 import com.mdau.ushirika.module.payment.repository.PlatformSettingsRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.core.context.SecurityContextHolder;
@@ -15,7 +16,11 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
+import java.util.Arrays;
+import java.util.EnumSet;
+import java.util.List;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 /**
  * Self-healing singleton settings row: created lazily on first real use rather than eagerly at
@@ -36,6 +41,14 @@ public class PlatformSettingsService {
     // member will be on probation for 6 months." Was hardcoded to 4 -- caught by comparing the
     // live admin Benevolence page against the bylaws text while live-testing, not by code review.
     private static final int DEFAULT_BENEVOLENCE_PROBATION_MONTHS = 6;
+    /** Behaviour before this became configurable: fines first, then dues, then MGR, then
+     *  Benevolence replenishment, then Benevolence enrollment. */
+    private static final List<SettlementBucket> DEFAULT_SETTLEMENT_PRIORITY = List.of(
+            SettlementBucket.FINE,
+            SettlementBucket.DUES,
+            SettlementBucket.MGR,
+            SettlementBucket.BENEVOLENCE_REPLENISHMENT,
+            SettlementBucket.BENEVOLENCE_ENROLLMENT);
     /** Deliberately narrower than most /financial/** access -- excludes FINANCIAL_OFFICIAL, since
      *  this is a platform-wide default, not a day-to-day finance operation. */
     private static final Set<UserRole> CAN_CHANGE_DEFAULT_CURRENCY =
@@ -111,6 +124,52 @@ public class PlatformSettingsService {
                 "Benevolence probation period changed from " + previous + " to " + months + " month(s) by " + admin.getFullName());
 
         return updated;
+    }
+
+    @Transactional
+    public List<SettlementBucket> getSettlementPriority() {
+        String raw = settings().getSettlementPriority();
+        if (raw == null || raw.isBlank()) return DEFAULT_SETTLEMENT_PRIORITY;
+        try {
+            List<SettlementBucket> parsed = Arrays.stream(raw.split(","))
+                    .map(String::trim)
+                    .filter(s -> !s.isEmpty())
+                    .map(SettlementBucket::valueOf)
+                    .toList();
+            // Only trust a stored value that lists every bucket exactly once -- a partial or
+            // duplicated list would silently drop or double-run an obligation type during settlement.
+            if (parsed.size() == SettlementBucket.values().length
+                    && EnumSet.copyOf(parsed).size() == SettlementBucket.values().length) {
+                return parsed;
+            }
+        } catch (IllegalArgumentException ignored) {
+            // unknown token -- fall through to the default
+        }
+        return DEFAULT_SETTLEMENT_PRIORITY;
+    }
+
+    @Transactional
+    public List<SettlementBucket> updateSettlementPriority(List<SettlementBucket> order) {
+        if (order == null
+                || order.size() != SettlementBucket.values().length
+                || EnumSet.copyOf(order).size() != SettlementBucket.values().length) {
+            throw new BadRequestException(
+                    "The priority list must contain every settlement bucket exactly once: "
+                    + Arrays.toString(SettlementBucket.values()));
+        }
+        PlatformSettings settings = settings();
+        String previous = settings.getSettlementPriority() != null
+                ? settings.getSettlementPriority()
+                : DEFAULT_SETTLEMENT_PRIORITY.stream().map(Enum::name).collect(Collectors.joining(","));
+        String joined = order.stream().map(Enum::name).collect(Collectors.joining(","));
+        settings.setSettlementPriority(joined);
+        repository.save(settings);
+
+        User admin = currentUser();
+        auditLogService.log(admin, "SETTLEMENT_PRIORITY_CHANGED", "PlatformSettings", settings.getId(),
+                "Payment settlement priority changed from [" + previous + "] to [" + joined + "] by " + admin.getFullName());
+
+        return order;
     }
 
     private PlatformSettings settings() {

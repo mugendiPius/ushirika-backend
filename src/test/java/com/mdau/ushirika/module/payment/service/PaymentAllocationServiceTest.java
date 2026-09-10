@@ -12,6 +12,7 @@ import com.mdau.ushirika.module.dues.service.MembershipDuesService;
 import com.mdau.ushirika.module.mgr.service.MgrService;
 import com.mdau.ushirika.module.payment.dto.MemberBalanceDto;
 import com.mdau.ushirika.module.payment.entity.MemberCreditBalance;
+import com.mdau.ushirika.module.payment.enums.SettlementBucket;
 import com.mdau.ushirika.module.payment.repository.MemberCreditBalanceRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -48,6 +49,7 @@ class PaymentAllocationServiceTest {
     @Mock private BenevolenceClaimService benevolenceClaimService;
     @Mock private BenevolenceEnrollmentService benevolenceEnrollmentService;
     @Mock private AuditLogService auditLogService;
+    @Mock private PlatformSettingsService platformSettingsService;
 
     private PaymentAllocationService service;
     private User member;
@@ -56,7 +58,12 @@ class PaymentAllocationServiceTest {
     void setUp() {
         service = new PaymentAllocationService(
                 creditBalanceRepository, fineService, membershipDuesService, mgrService,
-                benevolenceClaimService, benevolenceEnrollmentService, auditLogService);
+                benevolenceClaimService, benevolenceEnrollmentService, auditLogService,
+                platformSettingsService);
+
+        when(platformSettingsService.getSettlementPriority()).thenReturn(List.of(
+                SettlementBucket.FINE, SettlementBucket.DUES, SettlementBucket.MGR,
+                SettlementBucket.BENEVOLENCE_REPLENISHMENT, SettlementBucket.BENEVOLENCE_ENROLLMENT));
 
         member = User.builder().email("member@test.ushirika.org").role(UserRole.MEMBER).build();
         member.setId(UUID.randomUUID());
@@ -90,6 +97,22 @@ class PaymentAllocationServiceTest {
 
         verify(fineService).markPaid(any());
         verify(membershipDuesService, never()).applyExternalPayment(any(), any());
+    }
+
+    @Test
+    void reorderedPriority_duesSettledBeforeFines() {
+        // Same money and obligations as above, but the platform priority now puts DUES first.
+        when(platformSettingsService.getSettlementPriority()).thenReturn(List.of(
+                SettlementBucket.DUES, SettlementBucket.FINE, SettlementBucket.MGR,
+                SettlementBucket.BENEVOLENCE_REPLENISHMENT, SettlementBucket.BENEVOLENCE_ENROLLMENT));
+        when(fineService.getFinesForMember(member.getId())).thenReturn(List.of(
+                pendingFine(new BigDecimal("30.00"), LocalDate.now().minusDays(5))));
+        when(membershipDuesService.outstandingBalance(member)).thenReturn(new BigDecimal("100.00"));
+
+        service.applyPayment(member, new BigDecimal("30.00"));
+
+        verify(membershipDuesService).applyExternalPayment(member, new BigDecimal("30.00"));
+        verify(fineService, never()).markPaid(any());
     }
 
     @Test

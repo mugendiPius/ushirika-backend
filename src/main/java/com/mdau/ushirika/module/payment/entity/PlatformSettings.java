@@ -41,4 +41,12 @@ public class PlatformSettings extends BaseEntity {
      *  to a populated table would fail; PlatformSettingsService falls back to a default in code. */
     @Column(name = "benevolence_probation_months")
     private Integer benevolenceProbationMonths;
+
+    /** Comma-joined SettlementBucket names (e.g. "FINE,DUES,MGR,BENEVOLENCE_REPLENISHMENT,
+     *  BENEVOLENCE_ENROLLMENT") controlling the order PaymentAllocationService applies a pooled
+     *  payment across a member's obligations. Nullable / no column default for the same
+     *  ddl-auto reason as benevolenceProbationMonths above -- PlatformSettingsService falls back
+     *  to DEFAULT_SETTLEMENT_PRIORITY in code when this is null or malformed. */
+    @Column(name = "settlement_priority", length = 200)
+    private String settlementPriority;
 }
