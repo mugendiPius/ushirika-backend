@@ -239,7 +239,8 @@ public class MembershipService {
         applyRejection(application);
         applicationRepository.save(application);
 
-        auditLogService.log(admin, "APPLICATION_REJECTED", "MembershipApplication", application.getId(),
+        auditLogService.logAbout(admin, "APPLICATION_REJECTED", "MembershipApplication", application.getId(),
+                applicantName(application), application.getReferenceNumber(),
                 "Application " + application.getReferenceNumber() + " from " + applicantLabel(application)
                         + " rejected by " + admin.getFullName());
 
@@ -277,6 +278,8 @@ public class MembershipService {
 
         // Captured before we (maybe) detach the account below, so the audit line still names them.
         String who = applicantLabel(application);
+        String whoName = applicantName(application);
+        String whoRef = application.getReferenceNumber();
 
         User applicant = application.getUser();
         boolean removedAccount = false;
@@ -311,7 +314,8 @@ public class MembershipService {
         application.setRejectionReason(note != null ? note : "Voided by an administrator.");
         applicationRepository.save(application);
 
-        auditLogService.log(admin, "APPLICATION_VOIDED", "MembershipApplication", application.getId(),
+        auditLogService.logAbout(admin, "APPLICATION_VOIDED", "MembershipApplication", application.getId(),
+                whoName, whoRef,
                 "Application " + application.getReferenceNumber() + " from " + who + " voided by " + admin.getFullName()
                 + (removedAccount ? " — linked applicant account removed" : "")
                 + (note != null ? " — reason: " + note : ""));
@@ -326,6 +330,12 @@ public class MembershipService {
         String email = app.getUser() != null ? app.getUser().getEmail() : app.getApplicantEmail();
         if (name == null || name.isBlank()) name = "unnamed applicant";
         return (email != null && !email.isBlank()) ? name + " <" + email + ">" : name;
+    }
+
+    /** Just the display name — for the structured audit targetLabel. */
+    private String applicantName(MembershipApplication app) {
+        String name = app.getUser() != null ? app.getUser().getFullName() : app.getApplicantName();
+        return (name == null || name.isBlank()) ? "unnamed applicant" : name;
     }
 
     /** Same six checkpoints as {@link #requireOnboardingComplete}, as a plain boolean. */
@@ -449,11 +459,13 @@ public class MembershipService {
         log.info("Form sent for application {} — applicant={}{}", application.getReferenceNumber(), applicantEmail,
                 waiveRegistrationFee ? " (registration fee pre-waived)" : "");
 
-        auditLogService.log(admin, "FORM_SENT", "MembershipApplication", application.getId(),
+        auditLogService.logAbout(admin, "FORM_SENT", "MembershipApplication", application.getId(),
+                applicantName(application), application.getReferenceNumber(),
                 "Onboarding form sent to " + applicantLabel(application)
                         + " (application " + application.getReferenceNumber() + ") by " + admin.getFullName());
         if (waiveRegistrationFee) {
-            auditLogService.log(admin, "REGISTRATION_FEE_WAIVED", "MembershipApplication", application.getId(),
+            auditLogService.logAbout(admin, "REGISTRATION_FEE_WAIVED", "MembershipApplication", application.getId(),
+                    applicantName(application), application.getReferenceNumber(),
                     "Registration fee pre-waived at send-form for " + applicantLabel(application)
                             + " (application " + application.getReferenceNumber() + ") by " + admin.getFullName());
         }
@@ -495,7 +507,8 @@ public class MembershipService {
         log.info("Onboarding credentials resent for application {} — applicant={}", application.getReferenceNumber(), user.getEmail());
 
         User admin = currentUser();
-        auditLogService.log(admin, "FORM_CREDENTIALS_RESENT", "MembershipApplication", application.getId(),
+        auditLogService.logAbout(admin, "FORM_CREDENTIALS_RESENT", "MembershipApplication", application.getId(),
+                applicantName(application), application.getReferenceNumber(),
                 "Onboarding credentials resent to " + applicantLabel(application)
                         + " (application " + application.getReferenceNumber() + ") by " + admin.getFullName());
 
@@ -576,11 +589,13 @@ public class MembershipService {
         log.info("Membership approved for application {} — memberId={}{}",
                 application.getReferenceNumber(), profile.getMemberId(), waiving ? " (registration fee waived)" : "");
 
-        auditLogService.log(admin, "MEMBERSHIP_APPROVED", "MembershipApplication", application.getId(),
+        auditLogService.logAbout(admin, "MEMBERSHIP_APPROVED", "MembershipApplication", application.getId(),
+                user.getFullName(), profile.getMemberId(),
                 "Membership approved for " + user.getFullName() + " (ref " + application.getReferenceNumber()
                         + ", memberId " + profile.getMemberId() + ") by " + admin.getFullName());
         if (newlyWaived) {
-            auditLogService.log(admin, "REGISTRATION_FEE_WAIVED", "MembershipApplication", application.getId(),
+            auditLogService.logAbout(admin, "REGISTRATION_FEE_WAIVED", "MembershipApplication", application.getId(),
+                    user.getFullName(), profile.getMemberId(),
                     "Registration fee waived for " + user.getFullName() + " (ref " + application.getReferenceNumber()
                             + ") by " + admin.getFullName());
         }

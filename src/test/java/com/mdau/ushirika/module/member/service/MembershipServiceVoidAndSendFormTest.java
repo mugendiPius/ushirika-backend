@@ -130,7 +130,8 @@ class MembershipServiceVoidAndSendFormTest {
         assertNull(app.getUser());
         verify(profileRepository).delete(profile);
         verify(userRepository).delete(orphan);
-        verify(auditLogService).log(any(), eq("APPLICATION_VOIDED"), eq("MembershipApplication"), any(), any());
+        verify(auditLogService).logAbout(any(), eq("APPLICATION_VOIDED"), eq("MembershipApplication"),
+                any(), any(), any(), any());
         assertNotNull(result);
     }
 

@@ -53,6 +53,18 @@ public class AuditLog {
     @Column(name = "entity_id")
     private UUID entityId;
 
+    /** Human-readable name of the person/thing this action was ABOUT (distinct from the actor).
+     * e.g. "Barbara Weke" for a form-sent, "Fred Okembia" for an approval. Null where an action
+     * has no meaningful subject (a login, a settings change). Snapshot at log time. */
+    @Column(name = "target_label", length = 200)
+    private String targetLabel;
+
+    /** Stable identifier for that subject -- member ID ("UW-2026-0028"), application reference
+     * ("UWF-APP-5E7C425D"), claim reference, etc. Lets the audit line answer "which record"
+     * without opening it. Null alongside targetLabel. */
+    @Column(name = "target_ref", length = 60)
+    private String targetRef;
+
     @Column(name = "description", columnDefinition = "TEXT")
     private String description;
 

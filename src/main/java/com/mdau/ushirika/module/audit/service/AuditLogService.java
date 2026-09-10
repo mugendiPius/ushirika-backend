@@ -30,7 +30,7 @@ public class AuditLogService {
      */
     @Async
     public void log(User actor, String action, String entityType, UUID entityId, String description) {
-        log(actor, action, entityType, entityId, description, null, null);
+        persist(actor, action, entityType, entityId, null, null, description, null, null);
     }
 
     /**
@@ -45,6 +45,24 @@ public class AuditLogService {
     @Async
     public void log(User actor, String action, String entityType, UUID entityId, String description,
                      BigDecimal amount, LedgerDirection direction) {
+        persist(actor, action, entityType, entityId, null, null, description, amount, direction);
+    }
+
+    /**
+     * Same as {@link #log(User, String, String, UUID, String)} but also records the person/record
+     * this action was ABOUT -- targetLabel is a display name ("Barbara Weke"), targetRef a stable
+     * identifier (member ID "UW-2026-0028", application reference "UWF-APP-5E7C425D"). Lets an
+     * audit line answer "who / which record" on its own, without opening anything.
+     */
+    @Async
+    public void logAbout(User actor, String action, String entityType, UUID entityId,
+                          String targetLabel, String targetRef, String description) {
+        persist(actor, action, entityType, entityId, targetLabel, targetRef, description, null, null);
+    }
+
+    private void persist(User actor, String action, String entityType, UUID entityId,
+                         String targetLabel, String targetRef, String description,
+                         BigDecimal amount, LedgerDirection direction) {
         try {
             AuditLog entry = AuditLog.builder()
                     .actorId(actor.getId())
@@ -54,6 +72,8 @@ public class AuditLogService {
                     .action(action)
                     .entityType(entityType)
                     .entityId(entityId)
+                    .targetLabel(targetLabel)
+                    .targetRef(targetRef)
                     .description(description)
                     .amount(amount)
                     .direction(direction)
